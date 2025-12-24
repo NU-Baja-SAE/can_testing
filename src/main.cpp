@@ -99,32 +99,18 @@ void setup() {
 
 void loop() {
     twai_message_t frame;
-    esp_err_t ret = bajaCanReadFrame(&frame, 1000); // 1 second timeout
+    // send message every second
+    frame.identifier = 0x123;
+    frame.data_length_code = 8;
+    for (int i = 0; i < 8; i++) {
+        frame.data[i] = i;
+    }
+    esp_err_t ret = bajaCanWriteFrame(&frame, 1000);
     if (ret == ESP_OK) {
-        Serial.print("Received CAN frame with ID: ");
-        Serial.println(frame.identifier, HEX);
-    } else if (ret == ESP_ERR_BAJA_CAN_RX_TIMEOUT) {
-        Serial.println("No CAN frame received within timeout period.");
+        Serial.println("Frame transmitted");
     } else {
-        Serial.print("Error receiving CAN frame: ");
+        Serial.print("Failed to transmit frame with error: ");
         Serial.println(baja_err_to_name(ret));
     }
-
-    // Example of sending a CAN frame
-    twai_message_t txFrame;
-    txFrame.identifier = 0x123;
-    txFrame.data_length_code = 2;
-    txFrame.data[0] = 0xAB;
-    txFrame.data[1] = 0xCD;
-
-    ret = bajaCanWriteFrame(&txFrame, 100); // 100 ms timeout
-    if (ret == ESP_OK) {
-        Serial.println("CAN frame sent successfully.");
-    } else {
-        Serial.print("Error sending CAN frame: ");
-        Serial.println(baja_err_to_name(ret));
-    }
-
-    delay(2000); // Wait for 2 seconds before next loop
-   
+    delay(1000);
 }

@@ -1,75 +1,130 @@
 #include <ESP32-TWAI-CAN.hpp>
 
+// Custom error codes for Baja CAN operations
+// ESP-IDF custom errors start at 0x6000 for user applications
+#define ESP_ERR_BAJA_CAN_BASE           0x6000
+#define ESP_ERR_BAJA_CAN_TX_FAILED      (ESP_ERR_BAJA_CAN_BASE + 0x01)
+#define ESP_ERR_BAJA_CAN_RX_TIMEOUT     (ESP_ERR_BAJA_CAN_BASE + 0x02)
+#define ESP_ERR_BAJA_CAN_INVALID_FRAME  (ESP_ERR_BAJA_CAN_BASE + 0x03)
+#define ESP_ERR_BAJA_CAN_BUS_OFF        (ESP_ERR_BAJA_CAN_BASE + 0x04)
+#define ESP_ERR_BAJA_CAN_ARB_LOST       (ESP_ERR_BAJA_CAN_BASE + 0x05)
+
 // Default for ESP32
-#define CAN_TX 5
-#define CAN_RX 4
+gpio_num_t CAN_TX = gpio_num_t::GPIO_NUM_5;
+gpio_num_t CAN_RX = gpio_num_t::GPIO_NUM_4;
 
-CanFrame rxFrame;
 
-void sendObdFrame(uint8_t obdId) {
-    CanFrame obdFrame         = {0};
-    obdFrame.identifier       = 0x7DF; // Default OBD2 address;
-    obdFrame.extd             = 0;
-    obdFrame.data_length_code = 8;
-    obdFrame.data[0]          = 2;
-    obdFrame.data[1]          = 1;
-    obdFrame.data[2]          = obdId;
-    obdFrame.data[3]          = 0xAA; // Best use 0xAA (0b10101010) instead of 0
-    obdFrame.data[4]          = 0xAA; // TWAI / CAN works better this way, as it
-    obdFrame.data[5]          = 0xAA; // needs to avoid bit-stuffing
-    obdFrame.data[6]          = 0xAA;
-    obdFrame.data[7]          = 0xAA;
-    // Accepts both pointers and references
-    ESP32Can.writeFrame(obdFrame); // timeout defaults to 1 ms
+/**
+ * @brief Convert Baja CAN error codes to human-readable names
+ * Falls back to standard esp_err_to_name for non-Baja errors
+ * 
+ * @param error The error code to convert
+ * @return const char* Error name string
+ */
+const char* baja_err_to_name(esp_err_t error) {
+    switch(error) {
+        case ESP_ERR_BAJA_CAN_TX_FAILED:     return "ESP_ERR_BAJA_CAN_TX_FAILED";
+        case ESP_ERR_BAJA_CAN_RX_TIMEOUT:    return "ESP_ERR_BAJA_CAN_RX_TIMEOUT";
+        case ESP_ERR_BAJA_CAN_INVALID_FRAME: return "ESP_ERR_BAJA_CAN_INVALID_FRAME";
+        case ESP_ERR_BAJA_CAN_BUS_OFF:       return "ESP_ERR_BAJA_CAN_BUS_OFF";
+        case ESP_ERR_BAJA_CAN_ARB_LOST:      return "ESP_ERR_BAJA_CAN_ARB_LOST";
+        default:                             return esp_err_to_name(error);
+    }
 }
+
+
+/**
+ * @brief Installs twai driver and starts it. Use default config.
+ * 
+ * @param txPin
+ * @param rxPin
+ * 
+ * @return esp_err_t from twai_driver_install and twai_start
+ */
+esp_err_t initBajaCan(gpio_num_t txPin, gpio_num_t rxPin) {
+    twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(
+        txPin,
+        rxPin,
+        TWAI_MODE_NORMAL
+    );
+    twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
+    twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+
+    esp_err_t ret = twai_driver_install(&g_config, &t_config, &f_config);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    ret = twai_start();
+    return ret;
+}
+
+esp_err_t bajaCanReadFrame(twai_message_t* frame, uint32_t timeoutMs) {
+    if (!frame) {
+        return ESP_ERR_BAJA_CAN_INVALID_FRAME;
+    }
+    esp_err_t ret = twai_receive(frame, pdMS_TO_TICKS(timeoutMs));
+    if (ret == ESP_ERR_TIMEOUT) {
+        return ESP_ERR_BAJA_CAN_RX_TIMEOUT;
+    } else if (ret != ESP_OK) {
+        return ret; // Propagate other errors
+    }
+    return ESP_OK;
+}
+
+esp_err_t bajaCanWriteFrame(const twai_message_t* frame, uint32_t timeoutMs) {
+    if (!frame) {
+        return ESP_ERR_BAJA_CAN_INVALID_FRAME;
+    }
+    esp_err_t ret = twai_transmit(frame, pdMS_TO_TICKS(timeoutMs));
+    if (ret != ESP_OK) {
+        return ESP_ERR_BAJA_CAN_TX_FAILED;
+    }
+    return ESP_OK;
+}
+
 
 void setup() {
     // Setup serial for debbuging.
     Serial.begin(115200);
 
-    // Set pins
-    ESP32Can.setPins(CAN_TX, CAN_RX);
-
-    // You can set custom size for the queues - those are default
-    ESP32Can.setRxQueueSize(5);
-    ESP32Can.setTxQueueSize(5);
-
-    // .setSpeed() and .begin() functions require to use TwaiSpeed enum,
-    // but you can easily convert it from numerical value using .convertSpeed()
-    ESP32Can.setSpeed(ESP32Can.convertSpeed(500));
-
-    // You can also just use .begin()..
-    if(ESP32Can.begin()) {
-        Serial.println("CAN bus started!");
+    // Initialize CAN bus at default pins
+    esp_err_t ret = initBajaCan(CAN_TX, CAN_RX);
+    if (ret == ESP_OK) {
+        Serial.println("TWAI-CAN initialized");
     } else {
-        Serial.println("CAN bus failed!");
+        Serial.print("Failed to initialize TWAI-CAN with error: "); 
+        Serial.println(baja_err_to_name(ret));
     }
-
-    // // or override everything in one command;
-    // // It is also safe to use .begin() without .end() as it calls it internally
-    // if(ESP32Can.begin(ESP32Can.convertSpeed(500), CAN_TX, CAN_RX, 10, 10)) {
-    //     Serial.println("CAN bus started!");
-    // } else {
-    //     Serial.println("CAN bus failed!");
-    // }
 }
 
 void loop() {
-    static uint32_t lastStamp    = 0;
-    uint32_t        currentStamp = millis();
-
-    if(currentStamp - lastStamp > 1000) { // sends OBD2 request every second
-        lastStamp = currentStamp;
-        sendObdFrame(5); // For coolant temperature
-        Serial.println("Sent OBD2 request for coolant temperature");
+    twai_message_t frame;
+    esp_err_t ret = bajaCanReadFrame(&frame, 1000); // 1 second timeout
+    if (ret == ESP_OK) {
+        Serial.print("Received CAN frame with ID: ");
+        Serial.println(frame.identifier, HEX);
+    } else if (ret == ESP_ERR_BAJA_CAN_RX_TIMEOUT) {
+        Serial.println("No CAN frame received within timeout period.");
+    } else {
+        Serial.print("Error receiving CAN frame: ");
+        Serial.println(baja_err_to_name(ret));
     }
 
-    // You can set custom timeout, default is 1000
-    if(ESP32Can.readFrame(rxFrame, 1000)) {
-        // Comment out if too many frames
-        Serial.printf("Received frame: %03X  \r\n", rxFrame.identifier);
-        if(rxFrame.identifier == 0x7E8) {                                    // Standard OBD2 frame responce ID
-            Serial.printf("Collant temp: %3d°C \r\n", rxFrame.data[3] - 40); // Convert to °C
-        }
+    // Example of sending a CAN frame
+    twai_message_t txFrame;
+    txFrame.identifier = 0x123;
+    txFrame.data_length_code = 2;
+    txFrame.data[0] = 0xAB;
+    txFrame.data[1] = 0xCD;
+
+    ret = bajaCanWriteFrame(&txFrame, 100); // 100 ms timeout
+    if (ret == ESP_OK) {
+        Serial.println("CAN frame sent successfully.");
+    } else {
+        Serial.print("Error sending CAN frame: ");
+        Serial.println(baja_err_to_name(ret));
     }
+
+    delay(2000); // Wait for 2 seconds before next loop
+   
 }

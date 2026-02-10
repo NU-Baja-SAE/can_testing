@@ -12,6 +12,8 @@ BajaCan CANBus(CAN_TX, CAN_RX);
 
 void setup() {
     Serial.begin(115200);
+    Serial.println("ESP-IDF version is: " + String(esp_get_idf_version())); // v4.4.4, see docs here https://docs.espressif.com/projects/esp-idf/en/v4.4.4/esp32/api-reference/peripherals/twai.html
+    
     esp_err_t ret = CANBus.begin();
     if (ret == ESP_OK) {
         Serial.println("CAN bus initialized successfully.");
@@ -22,7 +24,6 @@ void setup() {
 
 void loop() {
     // send a CAN frame every second
-
     CanMessage frame(0x123, 42.0f); // Example CAN message with ID 0x123 and float data 42.0
     esp_err_t ret = CANBus.writeMessage(frame, 1000);
 
